@@ -1,141 +1,163 @@
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
+import json
+import binascii
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 import aiohttp
 import asyncio
-import json
-from byte import encrypt_api, Encrypt_ID
-from visit_count_pb2 import Info  # Make sure this protobuf file exists
+import urllib3
+from datetime import datetime, timedelta
+import os
+import threading
+from functools import lru_cache
+import time
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from google.protobuf.json_format import MessageToJson
+import uid_generator_pb2
+import like_count_pb2
 
 app = Flask(__name__)
 
-def load_tokens(server_name):
+def load_tokens(region):
     try:
-        if server_name == "IND":
-            path = "token_ind.json"
-        elif server_name in {"BR", "US", "SAC", "NA"}:
-            path = "token_br.json"
+        if region == "IND":
+            with open("token_ind.json", "r") as f:
+                tokens = json.load(f)
+        elif region in {"BR", "US", "SAC", "NA"}:
+            with open("token_br.json", "r") as f:
+                tokens = json.load(f)
         else:
-            path = "token_bd.json"
-
-        with open(path, "r") as f:
-            data = json.load(f)
-
-        tokens = [item["token"] for item in data if "token" in item and item["token"] not in ["", "N/A"]]
+            with open("token_bd.json", "r") as f:
+                tokens = json.load(f)
         return tokens
     except Exception as e:
-        app.logger.error(f"❌ Token load error for {server_name}: {e}")
-        return []
-
-def get_url(server_name):
-    if server_name == "IND":
-        return "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
-    elif server_name in {"BR", "US", "SAC", "NA"}:
-        return "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
-    else:
-        return "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"  # Fixed https://
-
-def parse_protobuf_response(response_data):
-    try:
-        info = Info()
-        info.ParseFromString(response_data)
-        
-        player_data = {
-            "uid": info.AccountInfo.UID if info.AccountInfo.UID else 0,
-            "nickname": info.AccountInfo.PlayerNickname if info.AccountInfo.PlayerNickname else "",
-            "likes": info.AccountInfo.Likes if info.AccountInfo.Likes else 0,
-            "region": info.AccountInfo.PlayerRegion if info.AccountInfo.PlayerRegion else "",
-            "level": info.AccountInfo.Levels if info.AccountInfo.Levels else 0
-        }
-        return player_data
-    except Exception as e:
-        app.logger.error(f"❌ Protobuf parsing error: {e}")
         return None
 
-async def visit(session, url, token, uid, data):
-    headers = {
-        "ReleaseVersion": "OB49",
-        "X-GA": "v1 1",
-        "Authorization": f"Bearer {token}",
-        "Host": url.replace("https://", "").split("/")[0]
-    }
+def encrypt_message(plaintext):
     try:
-        async with session.post(url, headers=headers, data=data, ssl=False) as resp:
-            if resp.status == 200:
-                response_data = await resp.read()
-                return True, response_data
-            else:
-                return False, None
+        key = b'Yg&tc%DEuh6%Zc^8'
+        iv = b'6oyZDr22E3ychjM%'
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        padded_message = pad(plaintext, AES.block_size)
+        encrypted_message = cipher.encrypt(padded_message)
+        return binascii.hexlify(encrypted_message).decode('utf-8')
     except Exception as e:
-        app.logger.error(f"❌ Visit error: {e}")
-        return False, None
+        return None
 
-async def send_until_1000_success(tokens, uid, server_name, target_success=1000):
-    url = get_url(server_name)
-    connector = aiohttp.TCPConnector(limit=0)
-    total_success = 0
-    total_sent = 0
-    first_success_response = None
-    player_info = None
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        encrypted = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
-        data = bytes.fromhex(encrypted)
-
-        while total_success < target_success:
-            batch_size = min(target_success - total_success, 1000)
-            tasks = [
-                asyncio.create_task(visit(session, url, tokens[(total_sent + i) % len(tokens)], uid, data))
-                for i in range(batch_size)
-            ]
-            results = await asyncio.gather(*tasks)
-            
-            if first_success_response is None:
-                for success, response in results:
-                    if success and response is not None:
-                        first_success_response = response
-                        player_info = parse_protobuf_response(response)
-                        break
-            
-            batch_success = sum(1 for success, _ in results if success)
-            total_success += batch_success
-            total_sent += batch_size
-
-            print(f"Batch sent: {batch_size}, Success in batch: {batch_success}, Total success so far: {total_success}")
-
-    return total_success, total_sent, player_info
-
-@app.route('/<string:server>/<int:uid>', methods=['GET'])
-def send_visits(server, uid):
-    server = server.upper()
-    tokens = load_tokens(server)
-    target_success = 1000
-
-    if not tokens:
-        return jsonify({"error": "❌ No valid tokens found"}), 500
-
-    print(f"🚀 Sending visits to UID: {uid} using {len(tokens)} tokens")
-    print(f"Waiting for total {target_success} successful visits...")
-
+def create_protobuf(uid):
     try:
-        total_success, total_sent, player_info = asyncio.run(send_until_1000_success(
-            tokens, uid, server,
-            target_success=target_success
-        ))
+        message = uid_generator_pb2.uid_generator()
+        message.saturn_ = int(uid)
+        message.garena = 1
+        return message.SerializeToString()
+    except Exception as e:
+        return None
 
-        if player_info:
-            player_info_response = {
-                "fail": target_success - total_success,
-                "level": player_info.get("level", 0),
-                "likes": player_info.get("likes", 0),
-                "nickname": player_info.get("nickname", ""),
-                "region": player_info.get("region", ""),
-                "success": total_success,
-                "uid": player_info.get("uid", 0)
-            }
-            return jsonify(player_info_response), 200
+def enc(uid):
+    protobuf_data = create_protobuf(uid)
+    if protobuf_data is None:
+        return None
+    encrypted_uid = encrypt_message(protobuf_data)
+    return encrypted_uid
+
+def make_request_threaded(encrypt, region, token, session, results, index):
+    try:
+        if region == "IND":
+            url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
+        elif region in {"BR", "US", "SAC", "NA"}:
+            url = "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
         else:
-            return jsonify({"error": "Could not decode player information", "success": total_success}), 200
+            url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
+            
+        edata = bytes.fromhex(encrypt)
+        headers = {
+            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+            'Connection': "Keep-Alive",
+            'Accept-Encoding': "gzip",
+            'Authorization': f"Bearer {token}",
+            'Content-Type': "application/x-www-form-urlencoded",
+            'Expect': "100-continue",
+            'X-Unity-Version': "2018.4.11f1",
+            'X-GA': "v1 1",
+            'ReleaseVersion': "OB49"
+        }
+        
+        with session.post(url, data=edata, headers=headers, ssl=False, timeout=5) as response:
+            if response.status != 200:
+                results[index] = None
+            else:
+                binary = response.read()
+                results[index] = decode_protobuf(binary)
     except Exception as e:
-        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+        results[index] = None
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+def decode_protobuf(binary):
+    try:
+        items = like_count_pb2.Info()
+        items.ParseFromString(binary)
+        return items
+    except Exception as e:
+        return None
+
+@app.route('/visit', methods=['GET'])
+async def visit():
+    target_uid = request.args.get("uid")
+    region = request.args.get("region", "").upper()
+    
+    if not all([target_uid, region]):
+        return jsonify({"error": "UID and region are required"}), 400
+        
+    try:
+        tokens = load_tokens(region)
+        if tokens is None:
+            raise Exception("Failed to load tokens.")
+            
+        encrypted_target_uid = enc(target_uid)
+        if encrypted_target_uid is None:
+            raise Exception("Encryption of target UID failed.")
+            
+        total_visits = len(tokens) * 20
+        success_count = 0
+        failed_count = 0
+        player_name = None
+        total_responses = []
+        
+        async with aiohttp.ClientSession() as session:
+            results = [None] * (len(tokens) * 20)
+            threads = []
+            for i, token in enumerate(tokens):
+                for j in range(20):
+                    thread = threading.Thread(target=make_request_threaded, args=(encrypted_target_uid, region, token['token'], session, results, i * 20 + j))
+                    threads.append(thread)
+                    thread.start()
+            
+            for thread in threads:
+                thread.join()
+            
+            for info in results:
+                total_responses.append(info)
+                if info:
+                    if not player_name:
+                        jsone = MessageToJson(info)
+                        data_info = json.loads(jsone)
+                        player_name = data_info.get('AccountInfo', {}).get('PlayerNickname', '')
+                    success_count += 1
+                else:
+                    failed_count += 1
+                
+        summary = {
+            "TotalVisits": total_visits,
+            "SuccessfulVisits": success_count,
+            "FailedVisits": failed_count,
+            "PlayerNickname": player_name,
+            "UID": int(target_uid),
+            "TotalResponses": total_responses
+        }
+        
+        return jsonify(summary)
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True, use_reloader=False)
