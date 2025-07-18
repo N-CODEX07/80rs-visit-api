@@ -3,7 +3,7 @@ import aiohttp
 import asyncio
 import json
 from byte import encrypt_api, Encrypt_ID
-from visit_count_pb2 import Info  # Import the generated protobuf class
+from visit_count_pb2 import Info  # Make sure this protobuf file exists
 
 app = Flask(__name__)
 
@@ -31,7 +31,7 @@ def get_url(server_name):
     elif server_name in {"BR", "US", "SAC", "NA"}:
         return "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
     else:
-        return "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
+        return "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"  # Fixed https://
 
 def parse_protobuf_response(response_data):
     try:
@@ -95,7 +95,7 @@ async def send_until_1000_success(tokens, uid, server_name, target_success=1000)
                         player_info = parse_protobuf_response(response)
                         break
             
-            batch_success = sum(1 for r, _ in results if r)
+            batch_success = sum(1 for success, _ in results if success)
             total_success += batch_success
             total_sent += batch_size
 
@@ -115,24 +115,27 @@ def send_visits(server, uid):
     print(f"🚀 Sending visits to UID: {uid} using {len(tokens)} tokens")
     print(f"Waiting for total {target_success} successful visits...")
 
-    total_success, total_sent, player_info = asyncio.run(send_until_1000_success(
-        tokens, uid, server,
-        target_success=target_success
-    ))
+    try:
+        total_success, total_sent, player_info = asyncio.run(send_until_1000_success(
+            tokens, uid, server,
+            target_success=target_success
+        ))
 
-    if player_info:
-        player_info_response = {
-            "fail": target_success - total_success,
-            "level": player_info.get("level", 0),
-            "likes": player_info.get("likes", 0),
-            "nickname": player_info.get("nickname", ""),
-            "region": player_info.get("region", ""),
-            "success": total_success,
-            "uid": player_info.get("uid", 0)
-        }
-        return jsonify(player_info_response), 200
-    else:
-        return jsonify({"error": "Could not decode player information"}), 500
+        if player_info:
+            player_info_response = {
+                "fail": target_success - total_success,
+                "level": player_info.get("level", 0),
+                "likes": player_info.get("likes", 0),
+                "nickname": player_info.get("nickname", ""),
+                "region": player_info.get("region", ""),
+                "success": total_success,
+                "uid": player_info.get("uid", 0)
+            }
+            return jsonify(player_info_response), 200
+        else:
+            return jsonify({"error": "Could not decode player information", "success": total_success}), 200
+    except Exception as e:
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
