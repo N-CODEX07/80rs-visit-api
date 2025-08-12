@@ -52,24 +52,18 @@ def encrypt_api(plain_text):
 def load_tokens(server_name):
     try:
         if server_name == "IND":
-            with open("token_ind.json", "r") as f:
-                data = json.load(f)
-                # Handle the special format with multiple "token" keys
-                if isinstance(data, dict):
-                    return [v for k, v in data.items() if k == "token"]
-                return []
+            filename = "token_ind.json"
         elif server_name in {"BR", "US", "SAC", "NA"}:
-            with open("token_br.json", "r") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return [v for k, v in data.items() if k == "token"]
-                return []
+            filename = "token_br.json"
         else:
-            with open("token_bd.json", "r") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return [v for k, v in data.items() if k == "token"]
-                return []
+            filename = "token_bd.json"
+        
+        with open(filename, "r") as f:
+            tokens_data = json.load(f)
+            # Handle array of objects with "token" property
+            if isinstance(tokens_data, list):
+                return [item["token"] for item in tokens_data if "token" in item]
+            return []
     except Exception as e:
         app.logger.error(f"Error loading tokens for server {server_name}: {e}")
         return []
@@ -115,7 +109,7 @@ async def send_request(player_id, jwt_token, region):
 @app.route('/attack', methods=['GET'])
 async def attack_handler():
     player_id = request.args.get('uid')
-    region = request.args.get('region', 'IND')
+    region = request.args.get('region', 'IND').upper()
     
     if not player_id:
         return jsonify({"status": "error", "message": "uid parameter is required"}), 400
@@ -126,10 +120,21 @@ async def attack_handler():
     except ValueError:
         return jsonify({"status": "error", "message": "uid must be a numeric value"}), 400
 
+    # Validate region
+    valid_regions = ["IND", "BR", "US", "SAC", "NA", "BD"]
+    if region not in valid_regions:
+        return jsonify({
+            "status": "error",
+            "message": f"Invalid region. Valid regions are: {', '.join(valid_regions)}"
+        }), 400
+
     # Load tokens for the specified region
     tokens = load_tokens(region)
     if not tokens:
-        return jsonify({"status": "error", "message": f"No valid tokens found for region {region}"}), 400
+        return jsonify({
+            "status": "error",
+            "message": f"No valid tokens found for region {region}. Check your token file."
+        }), 400
 
     # Limit to 100 tokens
     token_list = tokens[:100]
@@ -145,10 +150,12 @@ async def attack_handler():
         "status": "completed",
         "region": region,
         "target": player_id,
+        "total_tokens_available": len(tokens),
         "tokens_used": len(token_list),
         "success_count": success_count,
         "failure_count": len(token_list) - success_count,
-        "success_rate": f"{(success_count/len(token_list)*100):.2f}%"
+        "success_rate": f"{(success_count/len(token_list)*100):.2f}%",
+        "details": results
     })
 
 if __name__ == '__main__':
