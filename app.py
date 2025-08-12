@@ -74,7 +74,7 @@ async def make_request_async(encrypt, region, token, session):
             'Expect': "100-continue",
             'X-Unity-Version': "2018.4.11f1",
             'X-GA': "v1 1",
-            'ReleaseVersion': "OB48"
+            'ReleaseVersion': "OB50"
         }
 
         async with session.post(url, data=edata, headers=headers, ssl=False, timeout=5) as response:
@@ -141,7 +141,7 @@ async def visit():
             "FailedVisits": failed_count,
             "PlayerNickname": player_name,
             "UID": player_uid,
-            "Credits": "@Ironmanhindigaming & @DADDY_CHIPS"
+            "Credits": "@DEVXTLIVE"
         }
         return jsonify(summary)
     except Exception as e:
